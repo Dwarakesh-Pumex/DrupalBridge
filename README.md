@@ -1,26 +1,60 @@
-DRUPALBRIDGE BETA SETUP GUIDE
-==============================
+# DrupalBridge — Drupal HubSpot Integration
 
-1. Install module (see above)
+Professional Drupal-HubSpot CRM integration module.
 
-2. Go to: /admin/config/services/drupalbridge
+## Requirements
 
-3. Enter your HubSpot App Client ID and Secret
-   (from app.hubspot.com/developer)
+- Drupal 10 or 11
+- PHP 8.1+
+- HubSpot account with Private App token
+- Webform module (for webform sync)
 
-4. Click "Connect to HubSpot"
-   → Approve scopes on HubSpot screen
-   → You will be redirected back → Connected!
+## Installation
 
-5. Go to: /admin/config/services/drupalbridge/field-mapping
-   → Add mapping: email → Email
-   → Add mapping: first_name → First Name
-   → Save
+### Step 1 — Install the module
+```bash
+composer require pumex/drupalbridge
+drush en drupalbridge -y
+drush updb -y
+drush cr
+```
 
-6. Go to your webform → Settings → Handlers
-   → Add handler → DrupalBridge HubSpot
-   → Save
+### Step 2 — Configure API token
 
-7. Submit a test form on your site
+Go to: `/admin/config/services/drupalbridge`
 
-8. Check HubSpot contacts — contact should appear!
+- Enter your HubSpot Private App token
+- Enter your HubSpot Portal ID
+- Click **Test Connection**
+- Select sync mode (Real-time recommended)
+- Save configuration
+
+### Step 3 — Configure field mapping
+
+Go to: `/admin/config/services/drupalbridge/field-mapping`
+
+- Add mappings from Drupal fields to HubSpot properties
+- At minimum map: email → Email
+
+### Step 4 — Add webform handler
+
+Go to your webform → Settings → Emails/Handlers
+
+- Click **Add handler**
+- Select **DrupalBridge HubSpot**
+- Save
+
+### Step 5 — Test
+
+Submit your form and check HubSpot contacts.
+
+## HubSpot Private App Scopes Required
+
+- `crm.objects.contacts.write`
+- `crm.objects.contacts.read`
+- `forms`
+
+## Support
+
+- Documentation: https://drupalbridge.com/docs
+- Issues: https://github.com/pumex/drupalbridge/issues

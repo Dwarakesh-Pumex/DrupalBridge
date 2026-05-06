@@ -1,0 +1,34 @@
+drupalbridge.settings:
+  title: "DrupalBridge"
+  description: "Configure HubSpot integration settings"
+  route_name: drupalbridge.settings
+  parent: system.admin_config_services
+  weight: 10
+
+drupalbridge.field_mapping:
+  title: "Field Mapping"
+  description: "Map Drupal fields to HubSpot contact properties"
+  route_name: drupalbridge.field_mapping
+  parent: drupalbridge.settings
+  weight: 20
+
+drupalbridge.adapters:
+  title: 'Form Adapters'
+  description: 'View and manage form builder adapters'
+  route_name: drupalbridge.adapters
+  parent: drupalbridge.settings
+  weight: 30
+
+drupalbridge.historical_sync:
+  title: 'Historical Sync'
+  description: 'Bulk sync existing users to HubSpot'
+  route_name: drupalbridge.historical_sync
+  parent: drupalbridge.settings
+  weight: 50
+
+drupalbridge.sync_log:
+  title: 'Sync Log'
+  description: 'View HubSpot sync history'
+  route_name: drupalbridge.sync_log
+  parent: drupalbridge.settings
+  weight: 60    

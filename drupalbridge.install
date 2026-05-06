@@ -1,0 +1,193 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for DrupalBridge.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function drupalbridge_schema(): array {
+  $schema['drupalbridge_sync_log'] = [
+    'description' => 'Stores HubSpot sync log entries.',
+    'fields'      => [
+      'id' => [
+        'type'     => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'email' => [
+        'type'   => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'status' => [
+        'type'   => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => 'pending',
+        'description' => 'synced, failed, queued, gdpr_deleted',
+      ],
+      'source' => [
+        'type'   => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'contact_form, webform, user_insert, user_update, historical',
+      ],
+      'error_message' => [
+        'type'   => 'text',
+        'size'   => 'normal',
+        'not null' => FALSE,
+      ],
+      'hubspot_contact_id' => [
+        'type'   => 'varchar',
+        'length' => 64,
+        'not null' => FALSE,
+      ],
+      'attempts' => [
+        'type'     => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default'  => 0,
+      ],
+      'created' => [
+        'type'     => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default'  => 0,
+      ],
+      'updated' => [
+        'type'     => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default'  => 0,
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes'     => [
+      'email'   => ['email'],
+      'status'  => ['status'],
+      'created' => ['created'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
+ * Implements hook_install().
+ */
+function drupalbridge_install(): void {
+  \Drupal::messenger()->addStatus(
+    t('DrupalBridge installed. Visit <a href="/admin/config/services/drupalbridge">Settings</a> to configure.')
+  );
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function drupalbridge_uninstall(): void {
+  // Clean up config
+  \Drupal::configFactory()
+    ->getEditable('drupalbridge.settings')
+    ->delete();
+
+  \Drupal::configFactory()
+    ->getEditable('drupalbridge.field_mapping')
+    ->delete();
+
+  // Clean up state
+  \Drupal::state()->delete('drupalbridge.historical_sync_last_run');
+  \Drupal::state()->delete('drupalbridge.historical_sync_last_results');
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function drupalbridge_requirements(string $phase): array {
+  $requirements = [];
+
+  if ($phase !== 'runtime') {
+    return $requirements;
+  }
+
+  $config = \Drupal::config('drupalbridge.settings');
+
+  // Check API token
+  $token = $config->get('api_token');
+  $requirements['drupalbridge_token'] = [
+    'title'       => t('DrupalBridge API Token'),
+    'description' => $token
+      ? t('HubSpot Private App token is configured.')
+      : t('No HubSpot API token configured. <a href="/admin/config/services/drupalbridge">Configure DrupalBridge</a>.'),
+    'severity' => $token
+      ? REQUIREMENT_OK
+      : REQUIREMENT_ERROR,
+    'value' => $token ? t('Configured') : t('Missing'),
+  ];
+
+  // Check tracking
+  $trackingEnabled = $config->get('tracking_enabled');
+  $portalId        = $config->get('portal_id');
+  $requirements['drupalbridge_tracking'] = [
+    'title'    => t('DrupalBridge Tracking'),
+    'value'    => $trackingEnabled ? t('Enabled') : t('Disabled'),
+    'severity' => REQUIREMENT_INFO,
+  ];
+
+  // Check sync log table exists
+  $tableExists = \Drupal::database()->schema()
+    ->tableExists('drupalbridge_sync_log');
+
+  $requirements['drupalbridge_sync_log'] = [
+    'title'    => t('DrupalBridge Sync Log'),
+    'value'    => $tableExists ? t('Table exists') : t('Table missing'),
+    'severity' => $tableExists ? REQUIREMENT_OK : REQUIREMENT_WARNING,
+    'description' => $tableExists
+      ? NULL
+      : t('Run <code>drush updb</code> to create the sync log table.'),
+  ];
+
+  // Check failed syncs count
+  if ($tableExists) {
+    $failedCount = (int) \Drupal::database()
+      ->select('drupalbridge_sync_log', 'l')
+      ->condition('l.status', 'failed')
+      ->countQuery()
+      ->execute()
+      ->fetchField();
+
+    $requirements['drupalbridge_failed_syncs'] = [
+      'title'       => t('DrupalBridge Failed Syncs'),
+      'value'       => $failedCount,
+      'severity'    => $failedCount > 0 ? REQUIREMENT_WARNING : REQUIREMENT_OK,
+      'description' => $failedCount > 0
+        ? t('@count failed syncs need attention. <a href="/admin/config/services/drupalbridge/sync-log">View sync log</a>.', ['@count' => $failedCount])
+        : t('No failed syncs.'),
+    ];
+  }
+
+  return $requirements;
+}
+
+/**
+ * Add missing status column to sync log table.
+ */
+function drupalbridge_update_9002() {
+  $database = \Drupal::database();
+  $schema = $database->schema();
+
+  if ($schema->tableExists('drupalbridge_sync_log') &&
+      !$schema->fieldExists('drupalbridge_sync_log', 'status')) {
+
+    $schema->addField('drupalbridge_sync_log', 'status', [
+      'type' => 'varchar',
+      'length' => 32,
+      'not null' => TRUE,
+      'default' => 'pending',
+    ]);
+  }
+}

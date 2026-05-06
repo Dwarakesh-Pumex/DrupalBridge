@@ -1,0 +1,7 @@
+hubspot:
+  js:
+    https://js.hs-scripts.com/244464480.js:
+      type: external
+      attributes:
+        async: true
+        defer: true

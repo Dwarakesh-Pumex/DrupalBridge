@@ -1,0 +1,59 @@
+services:
+  drupalbridge.licence_service:
+    class: Drupal\drupalbridge\LicenceService
+    arguments: ["@config.factory"]
+
+  drupalbridge.hubspot_client:
+    class: Drupal\drupalbridge\HubSpotClient
+    arguments:
+      - "@http_client"
+      - "@config.factory"
+      - "@logger.factory"
+
+  drupalbridge.form_sync:
+    class: Drupal\drupalbridge\FormSyncService
+    arguments:
+      - "@drupalbridge.hubspot_client"
+      - "@logger.factory"
+      - "@config.factory"
+      - "@drupalbridge.sync_log_service"
+
+  drupalbridge.form_adapter_manager:
+    class: Drupal\drupalbridge\Adapter\FormAdapterManager
+
+  drupalbridge.legal_consent_service:
+    class: Drupal\drupalbridge\LegalConsentService
+    arguments: ["@config.factory"]
+
+  drupalbridge.historical_sync_service:
+    class: Drupal\drupalbridge\HistoricalSyncService
+    arguments:
+      - "@drupalbridge.hubspot_client"
+      - "@config.factory"
+      - "@logger.factory"
+
+  drupalbridge.sync_log_service:
+    class: Drupal\drupalbridge\SyncLogService
+
+  drupalbridge.commerce_sync:
+    class: Drupal\drupalbridge\CommerceSync
+    arguments:
+      - "@drupalbridge.hubspot_client"
+      - "@config.factory"
+      - "@logger.factory"
+
+  drupalbridge.webform_submission_subscriber:
+    class: Drupal\drupalbridge\EventSubscriber\WebformSubmissionSubscriber
+    arguments:
+      - "@drupalbridge.hubspot_client"
+      - "@drupalbridge.commerce_sync"
+      - "@config.factory"
+      - "@logger.factory"
+    tags:
+      - { name: event_subscriber }
+  
+  drupalbridge.rate_limit_service:
+    class: Drupal\drupalbridge\RateLimitService
+    arguments:
+      - '@config.factory'
+      - '@logger.factory'

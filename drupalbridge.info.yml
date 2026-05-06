@@ -1,0 +1,9 @@
+name: DrupalBridge
+type: module
+description: 'Professional Drupal-HubSpot CRM integration. Syncs form submissions, users, and commerce orders to HubSpot contacts and deals.'
+core_version_requirement: ^10 || ^11
+package: Web services
+version: '1.0.0'
+dependencies:
+  - drupal:webform
+configure: drupalbridge.settings

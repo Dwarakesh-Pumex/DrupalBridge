@@ -1,0 +1,97 @@
+drupalbridge.settings:
+  path: '/admin/config/services/drupalbridge'
+  defaults:
+    _form: '\Drupal\drupalbridge\Form\SettingsForm'
+    _title: 'DrupalBridge Settings'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.field_mapping:
+  path: '/admin/config/services/drupalbridge/field-mapping'
+  defaults:
+    _form: '\Drupal\drupalbridge\Form\FieldMappingForm'
+    _title: 'DrupalBridge Field Mapping'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.adapters:
+  path: '/admin/config/services/drupalbridge/adapters'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\AdapterStatusController::index'
+    _title: 'DrupalBridge Adapters'
+  requirements:
+    _permission: 'administer site configuration'    
+
+drupalbridge.webhook.contact_deletion:
+  path: '/drupalbridge/webhooks/contact-deletion'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\ContactDeletionController::handle'
+    _title: 'HubSpot Contact Deletion Webhook'
+  requirements:
+    _access: 'TRUE'
+  methods: [POST]
+
+drupalbridge.historical_sync:
+  path: '/admin/config/services/drupalbridge/historical-sync'
+  defaults:
+    _form:  '\Drupal\drupalbridge\Form\HistoricalSyncForm'
+    _title: 'Historical Sync'
+  requirements:
+    _permission: 'administer site configuration'  
+
+drupalbridge.sync_log:
+  path: '/admin/config/services/drupalbridge/sync-log'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\SyncLogController::index'
+    _title: 'Sync Log'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.sync_log.retry:
+  path: '/admin/config/services/drupalbridge/sync-log/retry/{id}'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\SyncLogController::retry'
+    _title: 'Retry Sync'
+  requirements:
+    _permission: 'administer site configuration'
+    id: '\d+'
+
+drupalbridge.sync_log.bulk_retry:
+  path: '/admin/config/services/drupalbridge/sync-log/bulk-retry'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\SyncLogController::bulkRetry'
+    _title: 'Bulk Retry'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.sync_log.export:
+  path: '/admin/config/services/drupalbridge/sync-log/export'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\SyncLogController::export'
+    _title: 'Export CSV'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.oauth.authorize:
+  path: '/drupalbridge/oauth/authorize'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\OAuthController::authorize'
+    _title: 'Connect to HubSpot'
+  requirements:
+    _permission: 'administer site configuration'
+
+drupalbridge.oauth.callback:
+  path: '/drupalbridge/oauth/callback'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\OAuthController::callback'
+    _title: 'HubSpot OAuth Callback'
+  requirements:
+    _access: 'TRUE'
+
+drupalbridge.oauth.disconnect:
+  path: '/drupalbridge/oauth/disconnect'
+  defaults:
+    _controller: '\Drupal\drupalbridge\Controller\OAuthController::disconnect'
+    _title: 'Disconnect HubSpot'
+  requirements:
+    _permission: 'administer site configuration'    

@@ -1,0 +1,864 @@
+<?php
+
+/**
+ * @file
+ * drupalbridge.module
+ *
+ * Integrates Drupal with HubSpot:
+ *  - Loads the HubSpot tracking script on every page.
+ *  - Grants HubSpot consent via _hsp BEFORE any tracking calls fire.
+ *  - Identifies authenticated users via _hsq.
+ *  - Fires trackPageView so /collect hits are recorded.
+ *  - Syncs contact-form submissions to HubSpot CRM via a service layer,
+ *    with queue-based retry on failure.
+ */
+
+use Drupal\Core\Form\FormStateInterface;
+
+// ---------------------------------------------------------------------------
+// 1. FORM ALTER
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Attaches our custom submit handler to every contact_message_* form.
+ */
+function drupalbridge_form_alter(array &$form, FormStateInterface $form_state, string $form_id): void {
+  if (strpos($form_id, 'contact_message_') !== 0) {
+    return;
+  }
+
+  // Drupal contact forms may surface the submit element under either key.
+  foreach (['actions', 'submit'] as $key) {
+    if (isset($form[$key]['submit'])) {
+      $form[$key]['submit']['#submit'][] = 'drupalbridge_contact_form_submit';
+    }
+  }
+
+  // Fallback: top-level submit element (some contrib contact variants).
+  if (isset($form['submit']) && !isset($form['actions']['submit'])) {
+    $form['submit']['#submit'][] = 'drupalbridge_contact_form_submit';
+  }
+}
+
+function drupalbridge_contact_form_submit(array &$form, FormStateInterface $form_state) {
+
+  \Drupal::logger('drupalbridge')->notice('🔥 Contact form submitted');
+
+  $values = $form_state->getValues();
+
+  // Example: extract basic fields
+  $contactData = [
+    'email'     => $values['mail'] ?? '',
+    'firstname' => $values['name'] ?? '',
+    'message'   => $values['message'] ?? '',
+  ];
+
+
+  // TODO: send to HubSpot via your service
+   
+   
+  try {
+    \Drupal::service('drupalbridge.form_sync')
+      ->createOrUpdateContact($contactData);
+  }
+  catch (\Exception $e) {
+    \Drupal::logger('drupalbridge')->error(
+      'Contact sync failed: @error',
+      ['@error' => $e->getMessage()]
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. PAGE ATTACHMENTS
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements hook_page_attachments().
+ *
+ * Attaches:
+ *  (a) The HubSpot base tracking script (async/defer).
+ *  (b) An inline bootstrap that:
+ *        - initialises both _hsq and _hsp queues,
+ *        - pushes setConsent via _hsp BEFORE any _hsq calls (required for
+ *          /collect hits to fire — the tracker silently drops trackPageView
+ *          when consent has not been granted),
+ *        - sets the page path,
+ *        - fires trackPageView.
+ *  (c) A one-shot identify snippet for anonymous visitors who just submitted
+ *      a contact form (email stashed in session by the submit handler).
+ *  (d) An optional identify snippet for authenticated Drupal users.
+ *
+ * WHY TWO QUEUES?
+ *   _hsq  — tracking commands (setPath, trackPageView, identify, etc.)
+ *   _hsp  — privacy/consent commands (setConsent)
+ * Both must be initialised before hs-scripts.com loads so the loader replays
+ * them in the correct order. Omitting _hsp or calling setConsent after
+ * trackPageView causes the /collect request to be silently suppressed.
+ */
+function drupalbridge_page_attachments(array &$attachments): void {
+
+  $config = \Drupal::config('drupalbridge.settings');
+
+  if (!$config->get('tracking_enabled')) {
+    return;
+  }
+
+  $portal_id = (string) $config->get('portal_id');
+  if ($portal_id === '') {
+    \Drupal::logger('drupalbridge')->warning('HubSpot tracking enabled but portal_id is empty.');
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // (1) INIT FIRST  ✅ VERY IMPORTANT
+  // -----------------------------------------------------------------------
+  $attachments['#attached']['html_head'][] = [
+  [
+    '#type'  => 'html_tag',
+    '#tag'   => 'script',
+    '#value' => <<<JS
+window._hsq = window._hsq || [];
+window._hsp = window._hsp || [];
+
+// Consent FIRST
+window._hsp.push(['setConsent', {
+  consent: {
+    analytics: true,
+    advertisement: true,
+    functionality: true
+  }
+}]);
+
+// Track immediately (queue handles timing)
+window._hsq.push(['setPath', location.pathname + location.search]);
+window._hsq.push(['trackPageView']);
+JS,
+  ],
+  'drupalbridge_hubspot_init',
+];
+
+  // -----------------------------------------------------------------------
+  // (2) LOAD HUBSPOT SCRIPT AFTER INIT ✅
+  // -----------------------------------------------------------------------
+  $attachments['#attached']['html_head'][] = [
+    [
+      '#type'       => 'html_tag',
+      '#tag'        => 'script',
+      '#attributes' => [
+        'id'    => 'hs-script-loader',
+        'type'  => 'text/javascript',
+        'src'   => 'https://js.hs-scripts.com/' . $portal_id . '.js',
+        'async' => TRUE,
+        'defer' => TRUE,
+      ],
+    ],
+    'drupalbridge_hubspot_tracking',
+  ];
+
+  // -----------------------------------------------------------------------
+  // (3) IDENTIFY (AFTER INIT)
+  // -----------------------------------------------------------------------
+  _drupalbridge_attach_identify($attachments);
+}
+
+// ---------------------------------------------------------------------------
+// 3. IDENTIFY (internal helper — prefixed with _ to signal non-hook status)
+// ---------------------------------------------------------------------------
+
+/**
+ * Appends an _hsq identify snippet for the current authenticated Drupal user.
+ *
+ * Consent is already granted by the drupalbridge_hubspot_init snippet that
+ * runs before this one, so the identify + trackPageView calls here will not
+ * be suppressed.
+ *
+ * Deliberately kept as a named function (not a closure) so it can be unit-
+ * tested and overridden via hook_module_implements_alter() if needed.
+ *
+ * @param array $attachments
+ *   The attachments array passed by reference from hook_page_attachments().
+ */
+function _drupalbridge_attach_identify(array &$attachments): void {
+  $user = \Drupal::currentUser();
+
+  if ($user->isAnonymous()) {
+    return;
+  }
+
+  $email = $user->getEmail();
+  if (empty($email)) {
+    return;
+  }
+
+  // Safely escape the email for inline JS output.
+  $safe_email = htmlspecialchars(addslashes($email), ENT_QUOTES, 'UTF-8');
+
+  $attachments['#attached']['html_head'][] = [
+    [
+      '#type'  => 'html_tag',
+      '#tag'   => 'script',
+      '#value' => <<<JS
+(function () {
+  // Consent has already been pushed by drupalbridge_hubspot_init, so
+  // identify + trackPageView will not be silently dropped by the tracker.
+  function hsIdentify() {
+    if (window._hsq) {
+      window._hsq.push(['identify', { email: '{$safe_email}' }]);
+      // Re-fire trackPageView so HubSpot associates the page hit with
+      // the identified contact rather than an anonymous visitor.
+      window._hsq.push(['trackPageView']);
+    }
+  }
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', hsIdentify);
+  } else {
+    hsIdentify();
+  }
+}());
+JS,
+    ],
+    'drupalbridge_hubspot_identify',
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// 4. CONTACT FORM SUBMIT
+// ---------------------------------------------------------------------------
+
+/**
+ * Custom submit handler for contact_message_* forms.
+ *
+ * Reads contact-entity fields that are not present in the raw form values
+ * (e.g., the sender's e-mail stored on the entity), normalises the data
+ * through the form-adapter manager, then either syncs immediately or queues
+ * the item for retry.
+ */
+
+// ---------------------------------------------------------------------------
+// 4. USER INSERT/SYNC
+// ---------------------------------------------------------------------------
+
+function drupalbridge_entity_insert(\Drupal\Core\Entity\EntityInterface $entity) {
+  if ($entity->getEntityTypeId() !== 'user') {
+    return;
+  }
+
+  \Drupal::logger('drupalbridge')->notice('🔥 ENTITY INSERT FIRED');
+
+  drupalbridge_user_insert($entity);
+}
+
+/**
+ * Implements hook_user_insert().
+ * Fires when a new Drupal user registers.
+ */
+function drupalbridge_user_insert($account) {
+  $config = \Drupal::config('drupalbridge.settings');
+
+  if (!$config->get('user_sync_enabled')) {
+    return;
+  }
+
+  // Check excluded roles
+  $excludedRoles = $config->get('user_sync_exclude_roles') ?? [];
+  foreach ($excludedRoles as $role) {
+    if ($account->hasRole($role)) {
+      \Drupal::logger('drupalbridge')->notice(
+        'User sync skipped for @user — excluded role @role.',
+        ['@user' => $account->getEmail(), '@role' => $role]
+      );
+      return;
+    }
+  }
+
+  $contactData = drupalbridge_build_user_contact_data($account);
+
+  if (empty($contactData['email'])) {
+    return;
+  }
+
+  try {
+    $formSyncService = \Drupal::service('drupalbridge.form_sync');
+    $formSyncService->createOrUpdateContact($contactData);
+
+    // Store HubSpot sync status on user
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'synced'
+    );
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_last_sync',
+      \Drupal::time()->getRequestTime()
+    );
+
+    \Drupal::logger('drupalbridge')->notice(
+      'New user synced to HubSpot: @email',
+      ['@email' => $contactData['email']]
+    );
+
+  }
+  catch (\Exception $e) {
+    // Queue for retry
+    \Drupal::queue('drupalbridge_sync_worker')->createItem([
+      'contact_data' => $contactData,
+      'attempts'     => 1,
+      'source'       => 'user_insert',
+      'last_error'   => $e->getMessage(),
+      'next_retry'   => time() + 300,
+    ]);
+
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'failed'
+    );
+
+    \Drupal::logger('drupalbridge')->warning(
+      'User sync failed for @email. Queued for retry. Error: @error',
+      [
+        '@email' => $contactData['email'],
+        '@error' => $e->getMessage(),
+      ]
+    );
+  }
+}
+
+/**
+ * Implements hook_user_update().
+ * Fires when a Drupal user updates their profile.
+ */
+function drupalbridge_user_update($account) {
+  $config = \Drupal::config('drupalbridge.settings');
+
+  if (!$config->get('user_sync_enabled')) {
+    return;
+  }
+
+  // Check excluded roles
+  $excludedRoles = $config->get('user_sync_exclude_roles') ?? [];
+  foreach ($excludedRoles as $role) {
+    if ($account->hasRole($role)) {
+      return;
+    }
+  }
+
+  $contactData = drupalbridge_build_user_contact_data($account);
+
+  if (empty($contactData['email'])) {
+    return;
+  }
+
+  try {
+    $formSyncService = \Drupal::service('drupalbridge.form_sync');
+    $formSyncService->createOrUpdateContact($contactData);
+
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'synced'
+    );
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_last_sync',
+      \Drupal::time()->getRequestTime()
+    );
+
+    \Drupal::logger('drupalbridge')->notice(
+      'User updated and synced to HubSpot: @email',
+      ['@email' => $contactData['email']]
+    );
+
+  }
+  catch (\Exception $e) {
+    \Drupal::queue('drupalbridge_sync_worker')->createItem([
+      'contact_data' => $contactData,
+      'attempts'     => 1,
+      'source'       => 'user_update',
+      'last_error'   => $e->getMessage(),
+      'next_retry'   => time() + 300,
+    ]);
+
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'failed'
+    );
+
+    \Drupal::logger('drupalbridge')->warning(
+      'User update sync failed for @email. Queued. Error: @error',
+      [
+        '@email' => $contactData['email'],
+        '@error' => $e->getMessage(),
+      ]
+    );
+  }
+}
+
+/**
+ * Implements hook_user_delete().
+ * Fires when a Drupal user is deleted.
+ */
+function drupalbridge_user_delete($account) {
+  $config = \Drupal::config('drupalbridge.settings');
+
+  if (!$config->get('user_sync_enabled')) {
+    return;
+  }
+
+  $email = $account->getEmail();
+
+  if (empty($email)) {
+    return;
+  }
+
+  try {
+    $hubspotClient = \Drupal::service('drupalbridge.hubspot_client');
+
+    // Search for contact by email
+    $searchResult = $hubspotClient->post('/crm/v3/objects/contacts/search', [
+      'filterGroups' => [
+        [
+          'filters' => [
+            [
+              'propertyName' => 'email',
+              'operator'     => 'EQ',
+              'value'        => $email,
+            ],
+          ],
+        ],
+      ],
+    ]);
+
+    if (!empty($searchResult['results'][0]['id'])) {
+      $contactId = $searchResult['results'][0]['id'];
+
+      // Archive the contact in HubSpot
+      $hubspotClient->delete('/crm/v3/objects/contacts/' . $contactId);
+
+      \Drupal::logger('drupalbridge')->notice(
+        'User deleted — HubSpot contact archived: @email',
+        ['@email' => $email]
+      );
+    }
+
+  }
+  catch (\Exception $e) {
+    \Drupal::logger('drupalbridge')->warning(
+      'Could not archive HubSpot contact for deleted user @email. Error: @error',
+      [
+        '@email' => $email,
+        '@error' => $e->getMessage(),
+      ]
+    );
+  }
+}
+
+/**
+ * Helper — build contact data from Drupal user account.
+ */
+function drupalbridge_build_user_contact_data($account): array {
+  $contactData = [
+    'email' => $account->getEmail(),
+  ];
+
+  // Load mappings from ONE config
+  $config = \Drupal::config('drupalbridge.settings');
+  $mappings = $config->get('user_mappings') ?? [];
+
+  if (!empty($mappings)) {
+
+    foreach ($mappings as $hubspotField => $drupalField) {
+      $value = '';
+
+      if ($drupalField === 'name') {
+        $value = $account->getDisplayName();
+      }
+      elseif ($account->hasField($drupalField)) {
+        $value = $account->get($drupalField)->value ?? '';
+      }
+
+      if (!empty($value)) {
+        $contactData[$hubspotField] = $value;
+      }
+    }
+
+  }
+  else {
+    // Default fallback
+    $name  = $account->getDisplayName();
+    $parts = explode(' ', trim($name), 2);
+
+    $contactData['firstname'] = $parts[0] ?? '';
+    $contactData['lastname']  = $parts[1] ?? '';
+  }
+
+  return $contactData;
+}
+
+
+
+/**
+ * Implements hook_user_format_name_alter().
+ */
+function drupalbridge_form_views_exposed_form_alter(&$form, $form_state, $form_id) {
+}
+
+
+
+function drupalbridge_form_user_form_alter(&$form, \Drupal\Core\Form\FormStateInterface $form_state, $form_id) {
+
+  $form['actions']['sync_hubspot'] = [
+    '#type' => 'submit',
+    '#value' => t('Sync to HubSpot'),
+    '#submit' => ['drupalbridge_manual_user_sync'],
+  ];
+}
+
+function drupalbridge_manual_user_sync($form, \Drupal\Core\Form\FormStateInterface $form_state) {
+  $account = $form_state->getFormObject()->getEntity();
+
+  $contactData = drupalbridge_build_user_contact_data($account);
+
+  // 🚨 ADD THIS CHECK
+  if (empty($contactData['email'])) {
+    \Drupal::messenger()->addError('User does not have an email. Cannot sync to HubSpot.');
+    return;
+  }
+
+  try {
+    \Drupal::service('drupalbridge.form_sync')
+      ->createOrUpdateContact($contactData);
+
+    // ✅ Also set status (you forgot this here)
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'synced'
+    );
+
+    \Drupal::messenger()->addStatus('User synced to HubSpot manually.');
+  }
+  catch (\Exception $e) {
+    \Drupal::service('user.data')->set(
+      'drupalbridge',
+      $account->id(),
+      'hubspot_sync_status',
+      'failed'
+    );
+
+    \Drupal::messenger()->addError('Manual sync failed: ' . $e->getMessage());
+  }
+}
+
+function drupalbridge_views_data() {
+  $data = [];
+
+  $data['users_field_data']['hubspot_sync_status'] = [
+  'title' => t('HubSpot Sync Status'),
+  'help' => t('Shows HubSpot sync status for the user'),
+  'field' => [
+    'id' => 'hubspot_sync_status_field',
+  ],
+  'real field' => 'uid',
+];
+
+  return $data;
+}
+
+/**
+ * Batch API process callback for historical sync.
+ */
+function drupalbridge_historical_sync_batch_process(
+  int $offset,
+  int $total,
+  array &$context
+): void {
+
+  $service = \Drupal::service('drupalbridge.historical_sync_service');
+  $users   = $service->getUserBatch($offset);
+  $results = $service->syncUserBatch($users);
+
+  // Initialize sandbox
+  if (empty($context['sandbox'])) {
+    $context['sandbox']['total']   = $total;
+    $context['sandbox']['current'] = 0;
+  }
+
+  $context['sandbox']['current'] += count($users);
+
+  // Accumulate results
+  $context['results']['success'] =
+    ($context['results']['success'] ?? 0) + $results['success'];
+  $context['results']['failed']  =
+    ($context['results']['failed'] ?? 0) + $results['failed'];
+  $context['results']['skipped'] =
+    ($context['results']['skipped'] ?? 0) + $results['skipped'];
+
+  // Update progress message
+  $context['message'] = t(
+    'Processed @current of @total users. Success: @success Failed: @failed',
+    [
+      '@current' => $context['sandbox']['current'],
+      '@total'   => $total,
+      '@success' => $context['results']['success'],
+      '@failed'  => $context['results']['failed'],
+    ]
+  );
+
+  // Set finished percentage
+  if ($context['sandbox']['total'] > 0) {
+    $context['finished'] = $context['sandbox']['current'] / $context['sandbox']['total'];
+  }
+  else {
+    $context['finished'] = 1;
+  }
+}
+
+/**
+ * Batch API finished callback for historical sync.
+ */
+function drupalbridge_historical_sync_batch_finished(
+  bool $success,
+  array $results,
+  array $operations
+): void {
+
+  if ($success) {
+    $successCount = $results['success'] ?? 0;
+    $failedCount  = $results['failed'] ?? 0;
+    $skippedCount = $results['skipped'] ?? 0;
+
+    // Store results for display on next page load
+    \Drupal::state()->set(
+      'drupalbridge.historical_sync_last_run',
+      \Drupal::time()->getRequestTime()
+    );
+    \Drupal::state()->set(
+      'drupalbridge.historical_sync_last_results',
+      [
+        'success' => $successCount,
+        'failed'  => $failedCount,
+        'skipped' => $skippedCount,
+      ]
+    );
+
+    \Drupal::messenger()->addStatus(
+      t('Historical sync complete. Success: @success Failed: @failed Skipped: @skipped', [
+        '@success' => $successCount,
+        '@failed'  => $failedCount,
+        '@skipped' => $skippedCount,
+      ])
+    );
+
+    \Drupal::logger('drupalbridge')->notice(
+      'Historical sync completed. Success: @success Failed: @failed Skipped: @skipped',
+      [
+        '@success' => $successCount,
+        '@failed'  => $failedCount,
+        '@skipped' => $skippedCount,
+      ]
+    );
+
+  }
+  else {
+    \Drupal::messenger()->addError(
+      t('Historical sync encountered errors. Check the logs for details.')
+    );
+  }
+}
+
+/**
+ * Implements hook_commerce_order_paid().
+ * Fires when a Drupal Commerce order is paid.
+ */
+function drupalbridge_commerce_order_paid($order) {
+
+  // Tier gate — Pro required
+  $licenceService = \Drupal::service('drupalbridge.licence_service');
+  if (!$licenceService->isValid()) {
+    \Drupal::logger('drupalbridge')->notice(
+      'Commerce sync skipped — Pro tier required.'
+    );
+    return;
+  }
+
+  $config = \Drupal::config('drupalbridge.settings');
+
+  if (!$config->get('commerce_sync_enabled')) {
+    return;
+  }
+
+  try {
+    $commerceSync = \Drupal::service('drupalbridge.commerce_sync');
+
+    // Build order data
+    $orderData = drupalbridge_build_order_data($order);
+
+    // First sync contact
+    if (!empty($orderData['email'])) {
+      $formSyncService = \Drupal::service('drupalbridge.form_sync');
+      $formSyncService->createOrUpdateContact([
+        'email'          => $orderData['email'],
+        'lifecyclestage' => 'customer',
+      ]);
+    }
+
+    // Create deal
+    $dealId = $commerceSync->createDeal($orderData);
+
+    if ($dealId) {
+      \Drupal::logger('drupalbridge')->notice(
+        'Commerce order @order synced to HubSpot deal @deal',
+        [
+          '@order' => $order->id(),
+          '@deal'  => $dealId,
+        ]
+      );
+    }
+
+  }
+  catch (\Exception $e) {
+    \Drupal::logger('drupalbridge')->error(
+      'Commerce sync failed for order @order: @error',
+      [
+        '@order' => $order->id(),
+        '@error' => $e->getMessage(),
+      ]
+    );
+  }
+}
+
+/**
+ * Helper — build order data array from Commerce order entity.
+ */
+function drupalbridge_build_order_data($order): array {
+  $email = $order->getEmail() ?? '';
+
+  // Get line items
+  $items = [];
+  foreach ($order->getItems() as $item) {
+    $items[] = [
+      'title'      => $item->getTitle(),
+      'quantity'   => $item->getQuantity(),
+      'unit_price' => $item->getUnitPrice()->getNumber(),
+      'currency'   => $item->getUnitPrice()->getCurrencyCode(),
+    ];
+  }
+
+  $totalPrice = $order->getTotalPrice();
+
+  return [
+    'order_id' => $order->id(),
+    'label'    => 'Order #' . $order->id(),
+    'total'    => $totalPrice ? $totalPrice->getNumber() : 0,
+    'currency' => $totalPrice ? $totalPrice->getCurrencyCode() : 'USD',
+    'email'    => $email,
+    'items'    => $items,
+  ];
+}
+
+/**
+ * Check if a form submission should trigger a deal.
+ * Called from form submit handlers.
+ */
+function drupalbridge_maybe_create_deal(
+  string $formId,
+  array $contactData
+): void {
+
+  $config = \Drupal::config('drupalbridge.settings');
+
+  // Get configured deal trigger forms
+  $dealTriggerForms = $config->get('commerce_deal_trigger_forms') ?? [];
+
+  if (!in_array($formId, $dealTriggerForms)) {
+    return;
+  }
+
+  $licenceService = \Drupal::service('drupalbridge.licence_service');
+  if (!$licenceService->isValid()) {
+    return;
+  }
+
+  try {
+    $commerceSync = \Drupal::service('drupalbridge.commerce_sync');
+
+    $dealData = [
+      'label' => trim(
+  ($contactData['firstname'] ?? '') . ' ' .
+  ($contactData['lastname'] ?? '')
+) ?: 'Lead from ' . $formId,
+      'email' => $contactData['email'] ?? '',
+      'total' => 0,
+      'items' => [],
+    ];
+
+    $dealId = $commerceSync->createDeal($dealData);
+
+    if ($dealId) {
+      \Drupal::logger('drupalbridge')->notice(
+        'Deal created from high-intent form @form: deal @deal',
+        ['@form' => $formId, '@deal' => $dealId]
+      );
+    }
+
+  }
+  catch (\Exception $e) {
+    \Drupal::logger('drupalbridge')->error(
+      'Failed to create deal from form @form: @error',
+      ['@form' => $formId, '@error' => $e->getMessage()]
+    );
+  }
+}
+
+/**
+ * Implements hook_mail().
+ */
+function drupalbridge_mail(
+  string $key,
+  array &$message,
+  array $params
+): void {
+
+  if ($key === 'error_alert') {
+    $message['subject'] = t(
+      '[DrupalBridge] Error Rate Alert — @count errors on @site',
+      [
+        '@count' => $params['error_count'],
+        '@site'  => $params['site_name'],
+      ]
+    );
+
+    $message['body'][] = t(
+      'DrupalBridge has detected @count HubSpot sync errors in the last @window minutes.',
+      [
+        '@count'  => $params['error_count'],
+        '@window' => $params['window'],
+      ]
+    );
+
+    $message['body'][] = t('Alert threshold: @threshold errors per hour.', [
+      '@threshold' => $params['threshold'],
+    ]);
+
+    $message['body'][] = t('Recent errors:');
+    $message['body'][] = $params['error_list'];
+
+    $message['body'][] = t(
+      'View sync log: @url',
+      ['@url' => \Drupal::request()->getSchemeAndHttpHost() . '/admin/config/services/drupalbridge/sync-log']
+    );
+  }
+}

@@ -1,0 +1,29 @@
+drupalbridge.settings.tab:
+  title: "Settings"
+  route_name: drupalbridge.settings
+  base_route: drupalbridge.settings
+  weight: 0
+
+drupalbridge.field_mapping.tab:
+  title: "Field Mapping"
+  route_name: drupalbridge.field_mapping
+  base_route: drupalbridge.settings
+  weight: 10
+
+drupalbridge.adapters.tab:
+  title: "Adapters"
+  route_name: drupalbridge.adapters
+  base_route: drupalbridge.settings
+  weight: 20
+
+drupalbridge.historical_sync.tab:
+  title: "Historical Sync"
+  route_name: drupalbridge.historical_sync
+  base_route: drupalbridge.settings
+  weight: 40
+
+drupalbridge.sync_log.tab:
+  title: 'Sync Log'
+  route_name: drupalbridge.sync_log
+  base_route: drupalbridge.settings
+  weight: 50

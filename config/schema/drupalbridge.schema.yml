@@ -1,0 +1,85 @@
+drupalbridge.settings:
+  type: config_object
+  label: "DrupalBridge Settings"
+  mapping:
+    oauth_client_id:
+      type: string
+      label: "HubSpot OAuth Client ID"
+    oauth_client_secret:
+      type: string
+      label: "HubSpot OAuth Client Secret"
+    oauth_refresh_token:
+      type: string
+      label: "HubSpot OAuth Refresh Token"
+    oauth_token_expires:
+      type: integer
+      label: "OAuth Token Expiry Timestamp"
+    api_token:
+      type: string
+      label: "HubSpot API Token"
+    portal_id:
+      type: string
+      label: "HubSpot Portal ID"
+    hub_domain:
+      type: string
+      label: "HubSpot Hub Domain"
+    sync_mode:
+      type: string
+      label: "Sync Mode"
+    tracking_enabled:
+      type: boolean
+      label: "Tracking Enabled"
+    tracking_exclude_admin:
+      type: boolean
+      label: "Exclude Admin from Tracking"
+    tracking_exclude_paths:
+      type: string
+      label: "Exclude Paths from Tracking"
+    user_sync_enabled:
+      type: boolean
+      label: "User Sync Enabled"
+    user_sync_exclude_roles:
+      type: sequence
+      label: "Excluded Roles"
+      sequence:
+        type: string
+    user_mappings:
+      type: mapping
+      label: "User Field Mappings"
+      mapping:
+        firstname:
+          type: string
+        lastname:
+          type: string
+    static_values:
+      type: mapping
+      label: "Static Values"
+      mapping:
+        lifecyclestage:
+          type: string
+    gdpr_enabled:
+      type: boolean
+      label: "GDPR Enabled"
+    gdpr_consent_text:
+      type: string
+      label: "GDPR Consent Text"
+    gdpr_subscription_type_id:
+      type: string
+      label: "GDPR Subscription Type ID"
+    hubspot_client_secret:
+      type: string
+      label: "HubSpot Client Secret for Webhooks"
+    commerce_sync_enabled:
+      type: boolean
+      label: "Commerce Sync Enabled"
+    commerce_deal_stage:
+      type: string
+      label: "Commerce Deal Stage"
+    commerce_pipeline:
+      type: string
+      label: "Commerce Pipeline"
+    commerce_deal_trigger_forms:
+      type: sequence
+      label: "Deal Trigger Forms"
+      sequence:
+        type: string
