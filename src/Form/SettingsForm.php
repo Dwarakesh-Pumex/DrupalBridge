@@ -100,27 +100,7 @@ class SettingsForm extends ConfigFormBase {
       '#placeholder'   => 'DB-XXXX-YYYY-ZZZZ-AAAA',
     ];
 
-    // ----------------------------
-    // HUBSPOT OAUTH CREDENTIALS
-    // ----------------------------
-    $form['oauth_client_id'] = [
-      '#type'          => 'textfield',
-      '#title'         => $this->t('HubSpot App Client ID'),
-      '#description'   => $this->t(
-        'Found in your HubSpot Public App → Auth tab at
-        <a href="https://app.hubspot.com/developer" target="_blank">
-        app.hubspot.com/developer</a>.'
-      ),
-      '#default_value' => $config->get('oauth_client_id') ?? '',
-    ];
-
-    $form['oauth_client_secret'] = [
-      '#type'        => 'password',
-      '#title'       => $this->t('HubSpot App Client Secret'),
-      '#description' => $this->t('Leave empty to keep existing secret.'),
-      '#default_value' => '',
-    ];
-
+   
     // ----------------------------
     // CONNECTION STATUS
     // ----------------------------
@@ -157,8 +137,6 @@ class SettingsForm extends ConfigFormBase {
         '#markup' => '
           <div class="messages messages--warning">
             ⚠️ <strong>Not connected to HubSpot.</strong><br>
-            Enter your Client ID and Secret above and save,
-            then click Connect to HubSpot.
           </div>
           <div style="margin: 15px 0;">
             <a href="/drupalbridge/oauth/authorize"
@@ -420,8 +398,6 @@ $commerceDealTriggerForms = array_filter(array_map(
 ));
 
     $config
-      ->set('oauth_client_id',    $clientId)
-      ->set('oauth_client_secret', $finalSecret)
       ->set('licence_key',        trim($form_state->getValue('licence_key') ?? ''))
       ->set('sync_mode',          $form_state->getValue('sync_mode') ?? 'realtime')
       ->set('tracking_enabled',   $trackingEnabled)

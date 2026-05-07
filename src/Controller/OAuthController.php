@@ -4,8 +4,10 @@ namespace Drupal\drupalbridge\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Routing\TrustedRedirectResponse;
+use Drupal\Core\Url;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Drupal\drupalbridge\DrupalBridgeConstants;
 
 /**
  * Handles HubSpot OAuth 2.0 authorization flow.
@@ -15,19 +17,26 @@ class OAuthController extends ControllerBase {
   /**
    * Step 1 — Redirect admin to HubSpot OAuth consent screen.
    */
-  public function authorize(): TrustedRedirectResponse {
-    $config   = \Drupal::config('drupalbridge.settings');
-    $clientId = $config->get('oauth_client_id');
+  public function authorize(): RedirectResponse {
+    $clientId     = DrupalBridgeConstants::HUBSPOT_CLIENT_ID;
+    $clientSecret = DrupalBridgeConstants::HUBSPOT_CLIENT_SECRET;
 
-    if (empty($clientId)) {
+    // Internal settings URL — use Drupal URL generator
+    $settingsUrl = Url::fromRoute('drupalbridge.settings')
+      ->setAbsolute(TRUE)
+      ->toString();
+
+    if (empty($clientId) || empty($clientSecret)) {
       \Drupal::messenger()->addError(
-        $this->t('Please enter your HubSpot App Client ID in Settings before connecting.')
+        $this->t('DrupalBridge app is not configured correctly. Please contact support.')
       );
-      return new TrustedRedirectResponse('/admin/config/services/drupalbridge');
+      return new RedirectResponse($settingsUrl);
     }
 
-    $redirectUri = \Drupal::request()->getSchemeAndHttpHost()
-      . '/drupalbridge/oauth/callback';
+    // Build redirect URI
+    $redirectUri = Url::fromRoute('drupalbridge.oauth.callback')
+      ->setAbsolute(TRUE)
+      ->toString();
 
     $scopes = [
       'oauth',
@@ -41,11 +50,12 @@ class OAuthController extends ControllerBase {
       'tickets',
     ];
 
-    // Generate state token — store in State API not session
+    // Generate state token — store in State API
     $state = bin2hex(random_bytes(16));
     \Drupal::state()->set('drupalbridge_oauth_state', $state);
     \Drupal::state()->set('drupalbridge_oauth_state_time', time());
 
+    // Build HubSpot OAuth URL
     $authUrl = 'https://app.hubspot.com/oauth/authorize?'
       . http_build_query([
         'client_id'    => $clientId,
@@ -55,14 +65,11 @@ class OAuthController extends ControllerBase {
       ], '', '&', PHP_QUERY_RFC3986);
 
     \Drupal::logger('drupalbridge')->notice(
-      'OAuth initiated. Redirect URI: @uri State: @state',
-      [
-        '@uri'   => $redirectUri,
-        '@state' => $state,
-      ]
+      'OAuth initiated. Redirect URI: @uri',
+      ['@uri' => $redirectUri]
     );
 
-    // TrustedRedirectResponse required for external URLs
+    // TrustedRedirectResponse for external HubSpot URL
     return new TrustedRedirectResponse($authUrl);
   }
 
@@ -74,27 +81,33 @@ class OAuthController extends ControllerBase {
     $state = $request->query->get('state');
     $error = $request->query->get('error');
 
-    $internalRedirect = '/admin/config/services/drupalbridge';
+    // Always use absolute internal URL
+    $settingsUrl = Url::fromRoute('drupalbridge.settings')
+      ->setAbsolute(TRUE)
+      ->toString();
 
     // Handle denied access
     if ($error) {
       \Drupal::messenger()->addError(
-        $this->t('HubSpot connection was denied: @error', ['@error' => $error])
+        $this->t('HubSpot connection was denied: @error', [
+          '@error' => $error,
+        ])
       );
-      return new RedirectResponse($internalRedirect);
+      return new RedirectResponse($settingsUrl);
     }
 
-    // Validate state from State API
+    // Validate state
     $savedState     = \Drupal::state()->get('drupalbridge_oauth_state');
     $savedStateTime = \Drupal::state()->get('drupalbridge_oauth_state_time', 0);
-    $stateExpired   = (time() - $savedStateTime) > 600; // 10 min expiry
+    $stateExpired   = (time() - $savedStateTime) > 1800;
 
     \Drupal::logger('drupalbridge')->notice(
-      'OAuth callback. Received state: @received Saved state: @saved Expired: @expired',
+      'OAuth callback. Received: @received Saved: @saved Expired: @expired Diff: @diff',
       [
         '@received' => $state ?? 'null',
         '@saved'    => $savedState ?? 'null',
         '@expired'  => $stateExpired ? 'yes' : 'no',
+        '@diff'     => time() - $savedStateTime,
       ]
     );
 
@@ -104,7 +117,7 @@ class OAuthController extends ControllerBase {
       );
       \Drupal::state()->delete('drupalbridge_oauth_state');
       \Drupal::state()->delete('drupalbridge_oauth_state_time');
-      return new RedirectResponse($internalRedirect);
+      return new RedirectResponse($settingsUrl);
     }
 
     if (empty($state) || empty($savedState) || $state !== $savedState) {
@@ -113,14 +126,14 @@ class OAuthController extends ControllerBase {
       );
       \Drupal::state()->delete('drupalbridge_oauth_state');
       \Drupal::state()->delete('drupalbridge_oauth_state_time');
-      return new RedirectResponse($internalRedirect);
+      return new RedirectResponse($settingsUrl);
     }
 
     if (empty($code)) {
       \Drupal::messenger()->addError(
         $this->t('No authorisation code received from HubSpot.')
       );
-      return new RedirectResponse($internalRedirect);
+      return new RedirectResponse($settingsUrl);
     }
 
     // Clear state immediately after validation
@@ -129,11 +142,12 @@ class OAuthController extends ControllerBase {
 
     // Exchange code for tokens
     try {
-      $config       = \Drupal::config('drupalbridge.settings');
-      $clientId     = $config->get('oauth_client_id');
-      $clientSecret = $config->get('oauth_client_secret');
-      $redirectUri  = $request->getSchemeAndHttpHost()
-        . '/drupalbridge/oauth/callback';
+      $clientId     = DrupalBridgeConstants::HUBSPOT_CLIENT_ID;
+      $clientSecret = DrupalBridgeConstants::HUBSPOT_CLIENT_SECRET;
+
+      $redirectUri = Url::fromRoute('drupalbridge.oauth.callback')
+        ->setAbsolute(TRUE)
+        ->toString();
 
       $httpClient = \Drupal::httpClient();
 
@@ -169,7 +183,7 @@ class OAuthController extends ControllerBase {
         throw new \Exception('No access token received from HubSpot.');
       }
 
-      // Get portal info from token
+      // Get portal info
       $infoResponse = $httpClient->get(
         'https://api.hubapi.com/oauth/v1/access-tokens/' . $accessToken
       );
@@ -182,11 +196,11 @@ class OAuthController extends ControllerBase {
       $portalId  = $infoData['hub_id'] ?? NULL;
       $hubDomain = $infoData['hub_domain'] ?? '';
 
-      // Save tokens — use setData to bypass schema validation
+      // Save tokens using setData to bypass schema validation
       $editable = \Drupal::configFactory()
         ->getEditable('drupalbridge.settings');
 
-      $data = $editable->getRawData();
+      $data                        = $editable->getRawData();
       $data['api_token']           = $accessToken;
       $data['oauth_refresh_token'] = $refreshToken;
       $data['oauth_token_expires'] = time() + $expiresIn;
@@ -225,12 +239,13 @@ class OAuthController extends ControllerBase {
       );
 
       \Drupal::messenger()->addError(
-        $this->t('Connection failed: @error', ['@error' => $e->getMessage()])
+        $this->t('Connection failed: @error', [
+          '@error' => $e->getMessage(),
+        ])
       );
     }
 
-    // Internal redirect — use plain RedirectResponse
-    return new RedirectResponse($internalRedirect);
+    return new RedirectResponse($settingsUrl);
   }
 
   /**
@@ -258,7 +273,11 @@ class OAuthController extends ControllerBase {
       $this->t('DrupalBridge disconnected from HubSpot.')
     );
 
-    return new RedirectResponse('/admin/config/services/drupalbridge');
+    $settingsUrl = Url::fromRoute('drupalbridge.settings')
+      ->setAbsolute(TRUE)
+      ->toString();
+
+    return new RedirectResponse($settingsUrl);
   }
 
 }
