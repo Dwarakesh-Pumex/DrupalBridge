@@ -388,27 +388,36 @@ class SettingsForm extends ConfigFormBase {
       'lastname'  => $form_state->getValue(['user_sync', 'lastname_field']) ?? '',
     ];
 
-    // Tracking values — nested under tracking details
-    $trackingEnabled      = $form_state->getValue(['tracking', 'tracking_enabled']) ?? 0;
-    $trackingExcludeAdmin = $form_state->getValue(['tracking', 'tracking_exclude_admin']) ?? 1;
-    $trackingExcludePaths = $form_state->getValue(['tracking', 'tracking_exclude_paths']) ?? '';
+    // Tracking values
+$trackingEnabled      = $form_state->getValue('tracking_enabled') ?? 0;
+$trackingExcludeAdmin = $form_state->getValue('tracking_exclude_admin') ?? 1;
+$trackingExcludePaths = $form_state->getValue('tracking_exclude_paths') ?? '';
 
-    // User sync values
-    $userSyncEnabled      = $form_state->getValue(['user_sync', 'user_sync_enabled']) ?? 0;
-    $userSyncExcludeRoles = $form_state->getValue(['user_sync', 'user_sync_exclude_roles']) ?? [];
+// User sync values
+$userSyncEnabled      = $form_state->getValue('user_sync_enabled') ?? 0;
+$userSyncExcludeRoles = $form_state->getValue('user_sync_exclude_roles') ?? [];
 
-    // GDPR values
-    $gdprEnabled            = $form_state->getValue(['gdpr', 'gdpr_enabled']) ?? 0;
-    $gdprConsentText        = $form_state->getValue(['gdpr', 'gdpr_consent_text']) ?? '';
-    $gdprSubscriptionTypeId = $form_state->getValue(['gdpr', 'gdpr_subscription_type_id']) ?? '';
+// GDPR values
+$gdprEnabled            = $form_state->getValue('gdpr_enabled') ?? 0;
+$gdprConsentText        = $form_state->getValue('gdpr_consent_text') ?? '';
+$gdprSubscriptionTypeId = $form_state->getValue('gdpr_subscription_type_id') ?? '';
 
-    // Commerce values
-    $commerceSyncEnabled      = $form_state->getValue(['commerce', 'commerce_sync_enabled']) ?? 0;
-    $commerceDealStage        = $form_state->getValue(['commerce', 'commerce_deal_stage']) ?? 'closedwon';
-    $commercePipeline         = $form_state->getValue(['commerce', 'commerce_pipeline']) ?? 'default';
-    $commerceDealTriggerForms = array_filter(array_map('trim',
-      explode("\n", $form_state->getValue(['commerce', 'commerce_deal_trigger_forms']) ?? '')
-    ));
+// Commerce values
+$commerceSyncEnabled = $form_state->getValue('commerce_sync_enabled') ?? 0;
+
+$commerceDealStage = $form_state->getValue('commerce_deal_stage')
+  ?? 'closedwon';
+
+$commercePipeline = $form_state->getValue('commerce_pipeline')
+  ?? 'default';
+
+$commerceDealTriggerForms = array_filter(array_map(
+  'trim',
+  explode(
+    "\n",
+    $form_state->getValue('commerce_deal_trigger_forms') ?? ''
+  )
+));
 
     $config
       ->set('oauth_client_id',    $clientId)
